@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Teachable Machine → Scratch Bridge</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 20px; }
+    #video { width: 320px; border: 2px solid #ddd; border-radius: 6px; }
+    .pill { display:inline-block; padding:6px 10px; border-radius:20px; background:#eef; margin-right:8px; }
+    input { width: 520px; max-width: 90%; }
+  </style>
+</head>
+<body>
+  <h2>🧠 Teachable Machine → Scratch Bridge</h2>
+  <p>Paste your <b>model.json</b> URL from Teachable Machine:</p>
+  <input id="model" placeholder="https://teachablemachine.withgoogle.com/models/XXXX/model.json">
+  <button id="load">Load model</button>
+  <div id="status" class="pill">Status: idle</div>
+
+  <p><video id="video" autoplay playsinline muted></video></p>
+  <p>Current prediction: <b id="label">—</b> (conf <span id="conf">0.00</span>)</p>
+
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.16.0/dist/tf.min.js"></script>
+  <script>
+    let model, webcamStream;
+    const video = document.getElementById("video");
+    const statusEl = document.getElementById("status");
+    const labelEl = document.getElementById("label");
+    const confEl = document.getElementById("conf");
+
+    async function startCamera() {
+      webcamStream = await navigator.mediaDevices.getUserMedia({ video:true, audio:false });
+      video.srcObject = webcamStream;
+      await video.play();
+    }
+
+    async function loadModel(url) {
+      statusEl.textContent = "Status: loading model…";
+      model = await tf.loadGraphModel(url);
+      statusEl.textContent = "Status: model loaded, starting camera…";
+      await startCamera();
+      statusEl.textContent = "Status: running…";
+      loop();
+    }
+
+    async function classify() {
+      const tensor = tf.tidy(() => {
+        const img = tf.browser.fromPixels(video);
+        return tf.image.resizeBilinear(img, [224,224]).expandDims(0).toFloat().div(255);
+      });
+      const logits = model.execute(tensor);
+      const data = await logits.data();
+      tf.dispose([tensor, logits]);
+
+      // Adjust these labels to match your Teachable Machine classes
+      const classes = ["Thumbs Up","No Hand"];
+      let maxI = 0;
+      for (let i=1;i<data.length;i++) if (data[i] > data[maxI]) maxI = i;
+      return { label: classes[maxI] || String(maxI), confidence: data[maxI] || 0 };
+    }
+
+    async function loop() {
+      try {
+        const { label, confidence } = await classify();
+        labelEl.textContent = label;
+        confEl.textContent = confidence.toFixed(2);
+
+        // send result to server for Scratch to fetch
+        fetch("/update", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ label, confidence })
+        }).catch(()=>{});
+
+      } catch(e) {
+        console.error(e);
+        statusEl.textContent = "Status: error (see console)";
+      }
+      requestAnimationFrame(loop);
+    }
+
+    document.getElementById("load").onclick = () => {
+      const url = document.getElementById("model").value.trim();
+      if (!url.endsWith("/model.json")) {
+        alert("Please paste a Teachable Machine model URL that ends with /model.json");
+        return;
+      }
+      loadModel(url);
+    };
+  </script>
+</body>
+</html>
